@@ -14,6 +14,9 @@ import torch
 import rfa_cuda
 
 
+EPS = 1.0
+
+
 def reverse_cumsum(x, dim):
     return torch.flip(torch.cumsum(torch.flip(x, [dim]), dim), [dim])
 
@@ -33,7 +36,7 @@ def rfa_debug(q, k, v):
     qs = torch.einsum("tbkd,tbk->tbd", s, q)
 
     z = torch.cumsum(k, dim=0)
-    qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(1.)
+    qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(EPS)
     attn = qs / qz.unsqueeze(-1)
     return attn
 
@@ -56,7 +59,7 @@ class RFA(torch.autograd.Function):
         qs = torch.einsum("tbkd,tbk->tbd", s, q)
 
         z = torch.cumsum(k, dim=0)
-        qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(1.)
+        qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(EPS)
         attn = qs / qz.unsqueeze(-1)
         return attn
 
@@ -78,13 +81,14 @@ class RFA(torch.autograd.Function):
         qs = torch.einsum("tbkd,tbk->tbd", s, q)
 
         z = torch.cumsum(k, dim=0)
-        qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(1.)
+        qz = torch.einsum("tbk,tbk->tb", q, z).clamp_min(EPS)
 
         # [bsz, tgt_len, head_dim]
         grad_qs = grad_attn / qz.unsqueeze(-1)
 
         grad_qz = torch.einsum("tbd,tbd->tb", grad_attn, qs)
         grad_qz = -grad_qz / (qz ** 2)
+        grad_qz = grad_qz * (qz > EPS)
 
         grad_q = torch.einsum("tbd,tbkd->tbk", grad_qs, s) \
             + grad_qz.unsqueeze(-1) * z
@@ -139,3 +143,24 @@ class RFA(torch.autograd.Function):
         grad_q, grad_k, grad_v = RFA.backward_cuda(q, k, v, grad_attn)
         # grad_q, grad_k, grad_v = RFA.backward_torch(q, k, v, grad_attn)
         return grad_q, grad_k, grad_v
+
+
+if __name__ == "__main__":
+    device = torch.device("cuda:0")
+    dtype = torch.double
+
+    bsz, tgt_len, proj_dim, head_dim = 2, 15, 128, 8
+    q = torch.rand(
+        (tgt_len, bsz, head_dim),
+        device=device, dtype=dtype, requires_grad=True) - 0.5
+    k = torch.rand(
+        (tgt_len, bsz, head_dim),
+        device=device, dtype=dtype, requires_grad=True) - 0.5
+    v = torch.rand(
+        (tgt_len, bsz, head_dim),
+        device=device, dtype=dtype, requires_grad=True)
+
+    res = torch.autograd.gradcheck(
+        RFA.apply,
+        (q, k, v),
+        raise_exception=True)

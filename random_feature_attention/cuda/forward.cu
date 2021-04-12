@@ -19,23 +19,23 @@ void rfa_forward_step(
         const __half * __restrict__ k_local,
         const __half * __restrict__ v_local,
         __half * __restrict__ attn_local,
-        __half2 s1_val[4][HALF2_PER_THREAD], 
-        __half2 s2_val[4][HALF2_PER_THREAD],
-        __half2 z_val[HALF2_PER_THREAD],
+        __half2 s1[4][HALF2_PER_THREAD], 
+        __half2 s2[4][HALF2_PER_THREAD],
+        __half2 z[HALF2_PER_THREAD],
         int num_threads_per_head_dim) {
     __half2 qs1[4] = {__float2half2_rn(0.f)};
     __half2 qz = __float2half2_rn(0.f);
-    __half2 q_val[HALF2_PER_THREAD] = { __float2half2_rn(0.f)};
-    __half2 k_val[HALF2_PER_THREAD] = { __float2half2_rn(0.f)};
-    __half2 v1_val[4] = { __float2half2_rn(0.f)};
-    read_int4(q_local, q_val, INT4_PER_THREAD);
-    read_int4(k_local, k_val, INT4_PER_THREAD);
-    read_int4(v_local, v1_val, 1);
-    __half2 v2_val[4] = {
-        __lowhigh2highlow(v1_val[0]),
-        __lowhigh2highlow(v1_val[1]),
-        __lowhigh2highlow(v1_val[2]),
-        __lowhigh2highlow(v1_val[3]),
+    __half2 q[HALF2_PER_THREAD] = { __float2half2_rn(0.f)};
+    __half2 k[HALF2_PER_THREAD] = { __float2half2_rn(0.f)};
+    __half2 v1[4] = { __float2half2_rn(0.f)};
+    read_int4(q_local, q, INT4_PER_THREAD);
+    read_int4(k_local, k, INT4_PER_THREAD);
+    read_int4(v_local, v1, 1);
+    __half2 v2[4] = {
+        __lowhigh2highlow(v1[0]),
+        __lowhigh2highlow(v1[1]),
+        __lowhigh2highlow(v1[2]),
+        __lowhigh2highlow(v1[3]),
     };
 
     #pragma unroll 
@@ -44,18 +44,18 @@ void rfa_forward_step(
         __half2 qs2 = __float2half2_rn(0.f);
         #pragma unroll 
         for (int j = 0;j < HALF2_PER_THREAD; ++ j) {
-            s1_val[i][j] = __hfma2(v1_val[i], k_val[j], s1_val[i][j]);
-            s2_val[i][j] = __hfma2(v2_val[i], k_val[j], s2_val[i][j]);
-            qs1[i] = __hfma2(s1_val[i][j], q_val[j], qs1[i]);
-            qs2 = __hfma2(s2_val[i][j], q_val[j], qs2);
+            s1[i][j] = __hfma2(v1[i], k[j], s1[i][j]);
+            s2[i][j] = __hfma2(v2[i], k[j], s2[i][j]);
+            qs1[i] = __hfma2(s1[i][j], q[j], qs1[i]);
+            qs2 = __hfma2(s2[i][j], q[j], qs2);
             
         }
         qs1[i] = __hadd2(qs1[i], __lowhigh2highlow(qs2));
     }
     #pragma unroll 
     for (int j = 0; j < HALF2_PER_THREAD; ++ j) {
-        z_val[j] = __hadd2(k_val[j], z_val[j]);
-        qz = __hfma2(z_val[j], q_val[j], qz);
+        z[j] = __hadd2(k[j], z[j]);
+        qz = __hfma2(z[j], q[j], qz);
     }
     #pragma unroll 
     for (int offset = num_threads_per_head_dim >> 1;
@@ -105,16 +105,16 @@ void rfa_forward(
 
     __half * __restrict__ attn_local = attn + bid * head_dim + head_dim_offset;
 
-    __half2 s1_val[4][HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
-    __half2 s2_val[4][HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
-    __half2 z_val[HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
+    __half2 s1[4][HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
+    __half2 s2[4][HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
+    __half2 z[HALF2_PER_THREAD] = {__float2half2_rn(0.f)};
     
     for (int t = 0; t < tgt_len; ++ t) {
         rfa_forward_step(
             q_local, k_local, v_local,
             attn_local,
-            s1_val, s2_val,
-            z_val,
+            s1, s2,
+            z,
             num_threads_per_head_dim
         );
         

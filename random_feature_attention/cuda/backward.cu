@@ -18,52 +18,52 @@ void q_backward_step(
         const __half* __restrict__ k_local,
         const __half* __restrict__ v_local,
         __half                      &qz_half,
-        const __half* __restrict__ ga_local,
-        __half2 gq1_val[4],
-        __half  &gqz_half,
-        __half2 s1_val[4][4],
-        __half2 s2_val[4][4],
-        __half2 z_val[4],
+        const __half* __restrict__ g_a_local,
+        __half2 g_q1[4],
+        __half  &g_qz_half,
+        __half2 s1[4][4],
+        __half2 s2[4][4],
+        __half2 z[4],
         __half  shared_mem_half[NUM_THREADS_PER_BLOCK],
         int4    shared_mem_int4[NUM_THREADS_PER_BLOCK],
         int num_threads_per_proj_dim,
         int num_threads_per_head_dim) {
-   __half2 q_val[4], k_val[4], v1_val[4], qs1_val[4], gqs1_val[4];
+   __half2 q[4], k[4], v1[4], qs1[4], g_qs1[4];
 
-   read_int4(q_local, q_val, 1);
-   read_int4(k_local, k_val, 1);
-   read_int4(v_local, v1_val, 1);
-   read_int4(ga_local, gqs1_val, 1);
+   read_int4(q_local, q, 1);
+   read_int4(k_local, k, 1);
+   read_int4(v_local, v1, 1);
+   read_int4(g_a_local, g_qs1, 1);
 
-   __half2 v2_val[4] = {
-        __lowhigh2highlow(v1_val[0]),
-        __lowhigh2highlow(v1_val[1]),
-        __lowhigh2highlow(v1_val[2]),
-        __lowhigh2highlow(v1_val[3]),
+   __half2 v2[4] = {
+        __lowhigh2highlow(v1[0]),
+        __lowhigh2highlow(v1[1]),
+        __lowhigh2highlow(v1[2]),
+        __lowhigh2highlow(v1[3]),
     };
 
-    __half2 qz_val = __float2half2_rn(0.f);
-    __half2 gqz_val = __float2half2_rn(0.f);
+    __half2 qz = __float2half2_rn(0.f);
+    __half2 g_qz = __float2half2_rn(0.f);
 
     /* qs qz starts */
     #pragma unroll
     for (int j = 0;j < 4; ++ j) {
-        qs1_val[j] = __float2half2_rn(0.f);
-        __half2 qs2_val = __float2half2_rn(0.f);
+        qs1[j] = __float2half2_rn(0.f);
+        __half2 qs2 = __float2half2_rn(0.f);
         #pragma unroll
         for (int i = 0;i < 4; ++ i) {
             // s
-            s1_val[i][j] = __hfma2(v1_val[j], k_val[i], s1_val[i][j]);
-            s2_val[i][j] = __hfma2(v2_val[j], k_val[i], s2_val[i][j]);
+            s1[i][j] = __hfma2(v1[j], k[i], s1[i][j]);
+            s2[i][j] = __hfma2(v2[j], k[i], s2[i][j]);
 
             // qs
-            qs1_val[j] = __hfma2(s1_val[i][j], q_val[i], qs1_val[j]);
-            qs2_val = __hfma2(s2_val[i][j], q_val[i], qs2_val);
+            qs1[j] = __hfma2(s1[i][j], q[i], qs1[j]);
+            qs2 = __hfma2(s2[i][j], q[i], qs2);
 
         }
-        qs1_val[j] = __hadd2(qs1_val[j], __lowhigh2highlow(qs2_val));
-        z_val[j] = __hadd2(z_val[j], k_val[j]);
-        qz_val = __hfma2(z_val[j], q_val[j], qz_val);
+        qs1[j] = __hadd2(qs1[j], __lowhigh2highlow(qs2));
+        z[j] = __hadd2(z[j], k[j]);
+        qz = __hfma2(z[j], q[j], qz);
     }
 
 
@@ -77,47 +77,47 @@ void q_backward_step(
     for (int offset = num_threads_per_head_dim >> 1; 
          offset > 0; 
          offset >>= 1) {
-        qz_val =  __hadd2(qz_val, __shfl_down_sync(FULL_MASK, qz_val, offset));
+        qz =  __hadd2(qz, __shfl_down_sync(FULL_MASK, qz, offset));
         #pragma unroll
         for (int j = 0; j < 4; ++ j) {
-            qs1_val[j] =  __hadd2(
-                qs1_val[j], 
-                __shfl_down_sync(FULL_MASK, qs1_val[j], offset));
+            qs1[j] =  __hadd2(
+                qs1[j], 
+                __shfl_down_sync(FULL_MASK, qs1[j], offset));
         }
     }
-    qz_half = __hadd(qz_val.x, qz_val.y);
+    qz_half = __hadd(qz.x, qz.y);
     qz_half = clamp_eps(qz_half);
 
     int remain = threadIdx.x % num_threads_per_head_dim;
     if (remain == 0) {
         shared_mem_half[threadIdx.x] = qz_half;
-        shared_mem_int4[threadIdx.x] = ((int4*) qs1_val)[0];
+        shared_mem_int4[threadIdx.x] = ((int4*) qs1)[0];
     }
     __syncthreads();
     if (remain > 0) {
         qz_half = shared_mem_half[threadIdx.x - remain];
-        ((int4*) qs1_val)[0] = shared_mem_int4[threadIdx.x - remain];
+        ((int4*) qs1)[0] = shared_mem_int4[threadIdx.x - remain];
     }
     __syncthreads();
-    qz_val = __half2half2(qz_half);
+    qz = __half2half2(qz_half);
 
     /* qs qz done */
 
-    /* gqz and gqs */
+    /* g_qz and g_qs */
     #pragma unroll
     for (int j = 0;j < 4; ++ j) {
         // here it is still g_attn
-        gqz_val = __hfma2(gqs1_val[j], qs1_val[j], gqz_val);
+        g_qz = __hfma2(g_qs1[j], qs1[j], g_qz);
 
-        // from now on it is gqs
-        gqs1_val[j] = __h2div(gqs1_val[j], qz_val);
+        // from now on it is g_qs
+        g_qs1[j] = __h2div(g_qs1[j], qz);
     }
 
-    __half2 gqs2_val[4] = {
-        __lowhigh2highlow(gqs1_val[0]),
-        __lowhigh2highlow(gqs1_val[1]),
-        __lowhigh2highlow(gqs1_val[2]),
-        __lowhigh2highlow(gqs1_val[3]),
+    __half2 g_qs2[4] = {
+        __lowhigh2highlow(g_qs1[0]),
+        __lowhigh2highlow(g_qs1[1]),
+        __lowhigh2highlow(g_qs1[2]),
+        __lowhigh2highlow(g_qs1[3]),
     };
 
     // 128 x 256 case:
@@ -128,31 +128,32 @@ void q_backward_step(
     // ...
     // 31 + 63 + ... + 511
 
-    gqz_half = __hadd(gqz_val.x, gqz_val.y);
-    shared_mem_half[threadIdx.x] = gqz_half;
+    g_qz_half = __hadd(g_qz.x, g_qz.y);
+    shared_mem_half[threadIdx.x] = g_qz_half;
     __syncthreads();
     if (threadIdx.x < num_threads_per_head_dim) {
         for (int i = num_threads_per_head_dim;
              i < num_threads_per_head_dim * num_threads_per_proj_dim; 
              i += num_threads_per_head_dim) {
-            gqz_half = __hadd(gqz_half, shared_mem_half[threadIdx.x + i]);
+            g_qz_half = __hadd(g_qz_half, shared_mem_half[threadIdx.x + i]);
         }
     }
     __syncthreads();
-    gqz_half = __hdiv(__hneg(gqz_half),
-                      __hmul(qz_half, qz_half));
-    gqz_val = __half2half2(gqz_half);
-    /* gqz and gqs done done */
+    g_qz_half = __hdiv(__hneg(g_qz_half),
+                       __hmul(qz_half, qz_half));
+    g_qz_half = select_eps(g_qz_half, qz_half);
+    g_qz = __half2half2(g_qz_half);
+    /* g_qz and g_qs done done */
     #pragma unroll
     for (int i = 0;i < 4; ++ i) {
-        gq1_val[i] = __float2half2_rn(0.f);
-        __half2 gq2_val = __float2half2_rn(0.f);
+        g_q1[i] = __float2half2_rn(0.f);
+        __half2 g_q2 = __float2half2_rn(0.f);
         #pragma unroll
         for (int j = 0;j < 4; ++ j) {
-            gq1_val[i] = __hfma2(s1_val[i][j], gqs1_val[j], gq1_val[i]);
-            gq2_val = __hfma2(s2_val[i][j], gqs2_val[j], gq2_val);
+            g_q1[i] = __hfma2(s1[i][j], g_qs1[j], g_q1[i]);
+            g_q2 = __hfma2(s2[i][j], g_qs2[j], g_q2);
         }
-        gq1_val[i] = __hadd2(gq1_val[i], gq2_val);
+        g_q1[i] = __hadd2(g_q1[i], g_q2);
     }
 
     // 128 x 256 case:
@@ -162,7 +163,7 @@ void q_backward_step(
     // 1 + 33 + 65 + ... + 481
     // ...
     // 31 + 63 + ... + 511
-    shared_mem_int4[threadIdx.x] = ((int4*) gq1_val)[0];
+    shared_mem_int4[threadIdx.x] = ((int4*) g_q1)[0];
     __syncthreads();
     if (threadIdx.x < num_threads_per_head_dim) {
         #pragma unroll
@@ -173,12 +174,12 @@ void q_backward_step(
             read_int4(shared_mem_int4[threadIdx.x + j], tmp);
             #pragma unroll
             for (int i = 0;i < 4; ++ i) {
-                gq1_val[i] = __hadd2(gq1_val[i], tmp[i]);
+                g_q1[i] = __hadd2(g_q1[i], tmp[i]);
             }
         }
         #pragma unroll
         for (int i = 0;i < 4; ++ i) {
-            gq1_val[i] = __hfma2(z_val[i], gqz_val,  gq1_val[i]);
+            g_q1[i] = __hfma2(z[i], g_qz,  g_q1[i]);
         }
     }
 }
@@ -189,67 +190,67 @@ void kv_backward_step(
         const __half* __restrict__ k_local,
         const __half* __restrict__ v_local,
         const __half   qz_half,
-        const __half* __restrict__ ga_local,
-        __half2 gk1_val[4],
-        __half2 gv1_val[4],
-        __half  gqz_half,
-        __half2 s1_val[4][4],
-        __half2 s2_val[4][4],
-        __half2 t_val[4],
+        const __half* __restrict__ g_a_local,
+        __half2 g_k1[4],
+        __half2 g_v1[4],
+        __half  g_qz_half,
+        __half2 s1[4][4],
+        __half2 s2[4][4],
+        __half2 t[4],
         int4    shared_mem_int4[NUM_THREADS_PER_BLOCK],
         int num_threads_per_proj_dim,
         int num_threads_per_head_dim) {
-    __half2 q1_val[4], k1_val[4], v_val[4], gqs_val[4];
-    read_int4(q_local, q1_val, 1);
-    read_int4(k_local, k1_val, 1);
-    read_int4(v_local, v_val, 1);
-    read_int4(ga_local, gqs_val, 1);
+    __half2 q1[4], k1[4], v[4], g_qs[4];
+    read_int4(q_local, q1, 1);
+    read_int4(k_local, k1, 1);
+    read_int4(v_local, v, 1);
+    read_int4(g_a_local, g_qs, 1);
 
-    __half2 qz_val = __half2half2(qz_half);
-    __half2 gqz_val = __half2half2(gqz_half);
+    __half2 qz = __half2half2(qz_half);
+    __half2 g_qz = __half2half2(g_qz_half);
     #pragma unroll
     for (int i = 0; i < 4; ++ i) {
-        gqs_val[i] = __h2div(gqs_val[i], qz_val);
+        g_qs[i] = __h2div(g_qs[i], qz);
     }
-    __half2 q2_val[4] = {
-        __lowhigh2highlow(q1_val[0]),
-        __lowhigh2highlow(q1_val[1]),
-        __lowhigh2highlow(q1_val[2]),
-        __lowhigh2highlow(q1_val[3]),
+    __half2 q2[4] = {
+        __lowhigh2highlow(q1[0]),
+        __lowhigh2highlow(q1[1]),
+        __lowhigh2highlow(q1[2]),
+        __lowhigh2highlow(q1[3]),
     };
 
-    __half2 k2_val[4] = {
-        __lowhigh2highlow(k1_val[0]),
-        __lowhigh2highlow(k1_val[1]),
-        __lowhigh2highlow(k1_val[2]),
-        __lowhigh2highlow(k1_val[3]),
+    __half2 k2[4] = {
+        __lowhigh2highlow(k1[0]),
+        __lowhigh2highlow(k1[1]),
+        __lowhigh2highlow(k1[2]),
+        __lowhigh2highlow(k1[3]),
     };
 
     #pragma unroll
     for (int i = 0;i < 4; ++ i) {
-        gk1_val[i] = __float2half2_rn(0.f);
-        __half2 gk2_val = __float2half2_rn(0.f);
-        t_val[i] = __hfma2(gqz_val, q1_val[i], t_val[i]);
+        g_k1[i] = __float2half2_rn(0.f);
+        __half2 g_k2 = __float2half2_rn(0.f);
+        t[i] = __hfma2(g_qz, q1[i], t[i]);
         #pragma unroll
         for (int j = 0;j < 4; ++ j) {
-            s1_val[i][j] = __hfma2(q1_val[i], gqs_val[j], s1_val[i][j]);
-            s2_val[i][j] = __hfma2(q2_val[i], gqs_val[j], s2_val[i][j]);
+            s1[i][j] = __hfma2(q1[i], g_qs[j], s1[i][j]);
+            s2[i][j] = __hfma2(q2[i], g_qs[j], s2[i][j]);
 
-            gk1_val[i] = __hfma2(s1_val[i][j], v_val[j], gk1_val[i]);
-            gk2_val = __hfma2(s2_val[i][j], v_val[j], gk2_val);
+            g_k1[i] = __hfma2(s1[i][j], v[j], g_k1[i]);
+            g_k2 = __hfma2(s2[i][j], v[j], g_k2);
         }
-        gk1_val[i] = __hadd2(gk1_val[i], __lowhigh2highlow(gk2_val));
+        g_k1[i] = __hadd2(g_k1[i], __lowhigh2highlow(g_k2));
     }
     #pragma unroll
     for (int j = 0;j < 4; ++ j) {
-        gv1_val[j] = __float2half2_rn(0.f);
-        __half2 gv2_val = __float2half2_rn(0.f);
+        g_v1[j] = __float2half2_rn(0.f);
+        __half2 g_v2 = __float2half2_rn(0.f);
         #pragma unroll
         for (int i = 0;i < 4; ++ i) {
-            gv1_val[j] = __hfma2(s1_val[i][j], k1_val[i], gv1_val[j]);
-            gv2_val = __hfma2(s2_val[i][j], k2_val[i], gv2_val);
+            g_v1[j] = __hfma2(s1[i][j], k1[i], g_v1[j]);
+            g_v2 = __hfma2(s2[i][j], k2[i], g_v2);
         }
-        gv1_val[j] = __hadd2(gv1_val[j], gv2_val);
+        g_v1[j] = __hadd2(g_v1[j], g_v2);
     }
 
     // 128 x 256 case:
@@ -260,7 +261,7 @@ void kv_backward_step(
     // ...
     // 31 + 63 + ... + 511
 
-    shared_mem_int4[threadIdx.x] = ((int4*) gk1_val)[0];
+    shared_mem_int4[threadIdx.x] = ((int4*) g_k1)[0];
     __syncthreads();
     if (threadIdx.x < num_threads_per_head_dim) {
         #pragma unroll
@@ -271,13 +272,13 @@ void kv_backward_step(
             read_int4(shared_mem_int4[threadIdx.x + j], tmp);
             #pragma unroll
             for (int i = 0;i < 4; ++ i) {
-                gk1_val[i] = __hadd2(gk1_val[i], tmp[i]);
+                g_k1[i] = __hadd2(g_k1[i], tmp[i]);
             }
         }
     }
     #pragma unroll
     for (int i = 0;i < 4; ++ i) {
-        gk1_val[i] = __hadd2(gk1_val[i], t_val[i]);
+        g_k1[i] = __hadd2(g_k1[i], t[i]);
     }
 
     // 128 x 256 case:
@@ -292,9 +293,9 @@ void kv_backward_step(
          offset >>= 1) {
         #pragma unroll
         for (int j = 0; j < 4; ++ j) {
-            gv1_val[j] =  __hadd2(
-                gv1_val[j], 
-                __shfl_down_sync(FULL_MASK, gv1_val[j], offset));
+            g_v1[j] =  __hadd2(
+                g_v1[j], 
+                __shfl_down_sync(FULL_MASK, g_v1[j], offset));
         }
     }
 }
@@ -330,42 +331,42 @@ void q_backward(
     const __half* __restrict__ q_local = q + proj_dim_offset;
     const __half* __restrict__ k_local = k + proj_dim_offset;
     const __half* __restrict__ v_local = v + head_dim_offset;
-    const __half* __restrict__ ga_local = grad_attn + head_dim_offset;
+    const __half* __restrict__ g_a_local = grad_attn + head_dim_offset;
 
-    __half* __restrict__ gq_local = grad_q + proj_dim_offset;
+    __half* __restrict__ g_q_local = grad_q + proj_dim_offset;
 
-    __half2 gq_val[4];
-    __half qz_half, gqz_half;
+    __half2 g_q[4];
+    __half qz_half, g_qz_half;
 
-    __half2 s1_val[4][4] = {__float2half2_rn(0.f)};
-    __half2 s2_val[4][4] = {__float2half2_rn(0.f)};
-    __half2 z_val[4] = {__float2half2_rn(0.f)};
+    __half2 s1[4][4] = {__float2half2_rn(0.f)};
+    __half2 s2[4][4] = {__float2half2_rn(0.f)};
+    __half2 z[4] = {__float2half2_rn(0.f)};
     for (int t = 0; t < tgt_len; ++ t) {
         q_backward_step(
             q_local, k_local, v_local,
-            qz_half, ga_local,
-            gq_val, gqz_half,
-            s1_val, s2_val,
-            z_val,
+            qz_half, g_a_local,
+            g_q, g_qz_half,
+            s1, s2,
+            z,
             shared_mem_half,
             shared_mem_int4,
             num_threads_per_proj_dim,
             num_threads_per_head_dim
         );
         if (head_dim_offset == 0) {
-            ((int4 *) gq_local)[0] = ((int4 *) gq_val)[0];
+            ((int4 *) g_q_local)[0] = ((int4 *) g_q)[0];
         }
 
         if (threadIdx.x == 0) {
             qz[t] = qz_half;
-            grad_qz[t] = gqz_half;
+            grad_qz[t] = g_qz_half;
         }
         __syncthreads();
         q_local += qk_inc_t;
         k_local += qk_inc_t;
         v_local += v_inc_t;
-        ga_local += v_inc_t;
-        gq_local += qk_inc_t;
+        g_a_local += v_inc_t;
+        g_q_local += qk_inc_t;
     }
 }
 
@@ -401,52 +402,51 @@ void kv_backward(
     const __half* __restrict__ q_local = q + proj_dim_offset;
     const __half* __restrict__ k_local = k + proj_dim_offset;
     const __half* __restrict__ v_local = v + head_dim_offset;
-    const __half* __restrict__ ga_local = grad_attn + head_dim_offset;
+    const __half* __restrict__ g_a_local = grad_attn + head_dim_offset;
 
-    __half* __restrict__ gk_local = grad_k + proj_dim_offset;
-    __half* __restrict__ gv_local = grad_v + head_dim_offset;
+    __half* __restrict__ g_k_local = grad_k + proj_dim_offset;
+    __half* __restrict__ g_v_local = grad_v + head_dim_offset;
 
-    __half2 s1_val[4][4] = {__float2half2_rn(0.f)};
-    __half2 s2_val[4][4] = {__float2half2_rn(0.f)};
-    __half2 t_val[4] = {__float2half2_rn(0.f)};
-    __half2 gk_val[4], gv_val[4];
-    __half qz_half, gqz_half;
+    __half2 s1[4][4] = {__float2half2_rn(0.f)};
+    __half2 s2[4][4] = {__float2half2_rn(0.f)};
+    __half2 t[4] = {__float2half2_rn(0.f)};
+    __half2 g_k[4], g_v[4];
+    __half qz_half, g_qz_half;
 
     int offset = tgt_len - 1;
     q_local += qk_inc_t * offset;
     k_local += qk_inc_t * offset;
     v_local += v_inc_t * offset;
-    ga_local += v_inc_t * offset;
+    g_a_local += v_inc_t * offset;
 
-    gk_local += qk_inc_t * offset;
-    gv_local += v_inc_t * offset;
-    for (int t = 0; t < tgt_len; ++ t) {
-        qz_half = qz[tgt_len - t - 1];
-        gqz_half = grad_qz[tgt_len - t - 1];
+    g_k_local += qk_inc_t * offset;
+    g_v_local += v_inc_t * offset;
+    for (int i = 0; i < tgt_len; ++ i) {
+        qz_half = qz[tgt_len - i - 1];
+        g_qz_half = grad_qz[tgt_len - i - 1];
         kv_backward_step(
-            q_local, k_local, v_local, qz_half, ga_local,
-            gk_val, gv_val, gqz_half,
-            s1_val, s2_val,
-            t_val,
+            q_local, k_local, v_local, qz_half, g_a_local,
+            g_k, g_v, g_qz_half,
+            s1, s2, t,
             shared_mem_int4,
             num_threads_per_proj_dim,
             num_threads_per_head_dim
         );
 
         if (proj_dim_offset == 0) {
-            ((int4 *) gv_local)[0] = ((int4 *) gv_val)[0];
+            ((int4 *) g_v_local)[0] = ((int4 *) g_v)[0];
         }
         if (head_dim_offset == 0) {
-            ((int4 *) gk_local)[0] = ((int4 *) gk_val)[0];
+            ((int4 *) g_k_local)[0] = ((int4 *) g_k)[0];
         }
         __syncthreads();
         q_local -= qk_inc_t;
         k_local -= qk_inc_t;
         v_local -= v_inc_t;
-        ga_local -= v_inc_t;
+        g_a_local -= v_inc_t;
 
-        gk_local -= qk_inc_t;
-        gv_local -= v_inc_t;
+        g_k_local -= qk_inc_t;
+        g_v_local -= v_inc_t;
     }
 }
 
@@ -481,7 +481,7 @@ void rfa_backward(
     const __half * __restrict__ q_local =  q + bid * proj_dim;
     const __half * __restrict__ k_local =  k + bid * proj_dim;
     const __half * __restrict__ v_local =  v + bid * head_dim;
-    const __half * __restrict__ ga_local = grad_attn + bid * head_dim;
+    const __half * __restrict__ g_a_local = grad_attn + bid * head_dim;
 
     __half * __restrict__ grad_q_local = grad_q + bid * proj_dim;
     __half * __restrict__ grad_k_local = grad_k + bid * proj_dim;
@@ -490,15 +490,15 @@ void rfa_backward(
     extern __shared__ __half qz_shared[];
     __shared__ __half shared_mem_half[NUM_THREADS_PER_BLOCK];
     __shared__ int4 shared_mem_int4[NUM_THREADS_PER_BLOCK];
-    __half * __restrict__ gqz_shared = qz_shared + tgt_len;
+    __half * __restrict__ g_qz_shared = qz_shared + tgt_len;
 
     q_backward(
         q_local,
         k_local,
         v_local,
         qz_shared,
-        ga_local,
-        gqz_shared,
+        g_a_local,
+        g_qz_shared,
         grad_q_local,
         shared_mem_half,
         shared_mem_int4,
@@ -514,8 +514,8 @@ void rfa_backward(
         k_local,
         v_local,
         qz_shared,
-        ga_local,
-        gqz_shared,
+        g_a_local,
+        g_qz_shared,
         grad_k_local,
         grad_v_local,
         shared_mem_int4,
